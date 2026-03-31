@@ -14,7 +14,7 @@ class WebSocketClient:
         try:
             self.connection = await websockets.connect(
                 self.url,
-                max_size=None,  # important for audio streaming
+                max_size=None,
                 ping_interval=20,
                 ping_timeout=20,
             )
@@ -29,27 +29,29 @@ class WebSocketClient:
         [4 bytes sample_rate][raw int16 audio bytes]
         """
         if self.connection is None:
-            print("[WebSocket] Not connected. Attempting reconnect...")
+            print("[WebSocket] Reconnecting...")
             await self.connect()
             if self.connection is None:
+                print("[WebSocket] Dropping audio chunk (no connection)")
                 return
 
         try:
             sample_rate = settings.SAMPLE_RATE
 
-            # Ensure correct dtype
+            # 🔥 Ensure proper format
             if audio_chunk.dtype != np.int16:
-                audio_chunk = (audio_chunk * 32768.0).astype(np.int16)
+                audio_chunk = np.clip(audio_chunk, -1.0, 1.0)
+                audio_chunk = (audio_chunk * 32767).astype(np.int16)
 
-            # Header (4 bytes unsigned int)
             header = struct.pack("I", sample_rate)
-
-            # Audio bytes
             audio_bytes = audio_chunk.tobytes()
 
             payload = header + audio_bytes
 
             await self.connection.send(payload)
+
+            # 🔥 Yield control (important for async stability)
+            await asyncio.sleep(0)
 
         except Exception as e:
             print(f"[WebSocket] Send failed: {e}")

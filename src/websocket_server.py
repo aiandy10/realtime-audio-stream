@@ -1,110 +1,69 @@
 import asyncio
 import websockets
-import numpy as np
-import struct
 
 HOST = "0.0.0.0"
 PORT = 8765
 
-# 🔥 CONFIG (tune later)
-SAMPLE_RATE = 16000
-WINDOW_SECONDS = 8      # how much audio Whisper sees
-STRIDE_SECONDS = 3      # how often we run inference
-
-WINDOW_SIZE = SAMPLE_RATE * WINDOW_SECONDS
-STRIDE_SIZE = SAMPLE_RATE * STRIDE_SECONDS
+# Store all connected clients
+connected_clients = set()
 
 
-class AudioSession:
-    def __init__(self):
-        self.buffer = np.array([], dtype=np.float32)
-        self.last_processed_index = 0
-
-    def add_chunk(self, audio):
-        self.buffer = np.concatenate([self.buffer, audio])
-
-    def get_buffer_duration(self):
-        return len(self.buffer) / SAMPLE_RATE
-
-    def get_next_window(self):
-        """
-        Returns next sliding window if enough new data exists
-        """
-        if len(self.buffer) < WINDOW_SIZE:
-            return None
-
-        if self.last_processed_index + WINDOW_SIZE > len(self.buffer):
-            return None
-
-        start = self.last_processed_index
-        end = start + WINDOW_SIZE
-
-        window = self.buffer[start:end]
-
-        # Move forward by stride (NOT full window → overlap)
-        self.last_processed_index += STRIDE_SIZE
-
-        return window
+async def register(websocket):
+    connected_clients.add(websocket)
+    print(f"🟢 Client connected | Total: {len(connected_clients)}")
 
 
-async def fake_whisper_inference(audio_window):
+async def unregister(websocket):
+    connected_clients.remove(websocket)
+    print(f"🔴 Client disconnected | Total: {len(connected_clients)}")
+
+
+async def broadcast(sender, message):
     """
-    🔥 Replace this later with real Whisper
+    Send incoming audio to all OTHER clients
     """
-    duration = len(audio_window) / SAMPLE_RATE
-    print(f"🧠 [Whisper] Processing {duration:.2f}s audio...")
-    
-    # Simulated result
-    return "transcribed text..."
+    dead_clients = []
+
+    for client in connected_clients:
+        if client != sender:
+            try:
+                await client.send(message)
+            except:
+                dead_clients.append(client)
+
+    # Remove broken connections
+    for dc in dead_clients:
+        connected_clients.remove(dc)
 
 
 async def handle_connection(websocket):
-    print("🟢 Client connected")
-
-    session = AudioSession()
+    await register(websocket)
 
     try:
         async for message in websocket:
+            print(f"📥 Received {len(message)} bytes")
 
-            # -------------------------------
-            # Decode message (header + audio)
-            # -------------------------------
-            sample_rate = struct.unpack("I", message[:4])[0]
-            audio_bytes = message[4:]
-
-            audio = np.frombuffer(audio_bytes, dtype=np.int16)
-            audio = audio.astype("float32") / 32768.0
-
-            # -------------------------------
-
-            session.add_chunk(audio)
-
-            print(
-                f"📥 Chunk | SR: {sample_rate} | Samples: {len(audio)} | Buffer: {session.get_buffer_duration():.2f}s"
-            )
-
-            # -------------------------------
-            # 🔥 SLIDING WINDOW TRIGGER
-            # -------------------------------
-            while True:
-                window = session.get_next_window()
-
-                if window is None:
-                    break
-
-                # 🔥 Whisper call
-                text = await fake_whisper_inference(window)
-
-                # Send result back
-                await websocket.send(text)
+            # 🔥 Just forward — no processing
+            await broadcast(websocket, message)
 
     except websockets.exceptions.ConnectionClosed:
-        print("🔴 Client disconnected")
+        pass
+
+    finally:
+        await unregister(websocket)
 
 
 async def main():
-    print(f"🚀 WebSocket Server running on ws://{HOST}:{PORT}")
-    async with websockets.serve(handle_connection, HOST, PORT, max_size=None):
+    print(f"🚀 Broadcast Server running on ws://{HOST}:{PORT}")
+
+    async with websockets.serve(
+        handle_connection,
+        HOST,
+        PORT,
+        max_size=None,
+        ping_interval=20,
+        ping_timeout=20
+    ):
         await asyncio.Future()
 
 
