@@ -19,8 +19,13 @@ class VADProcessor:
         """
         Determines if given audio chunk contains speech
         """
-        if len(audio_chunk) < self.frame_size:
+        if audio_chunk is None or len(audio_chunk) < self.frame_size:
             return False
+
+        #  Convert float32 → int16 (CRITICAL)
+        if audio_chunk.dtype != np.int16:
+            audio_chunk = np.clip(audio_chunk, -1.0, 1.0)
+            audio_chunk = (audio_chunk * 32767).astype(np.int16)
 
         speech_frames = 0
         total_frames = 0
@@ -42,5 +47,5 @@ class VADProcessor:
         if total_frames == 0:
             return False
 
-        # threshold: at least 30% frames must be speech
+        # 🔥 Slightly stricter threshold (more stable)
         return (speech_frames / total_frames) > 0.3

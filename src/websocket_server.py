@@ -1,60 +1,124 @@
 import asyncio
 import websockets
+import uuid
+import struct
+import numpy as np
 
 HOST = "0.0.0.0"
 PORT = 8765
 
-# Store all connected clients
-connected_clients = set()
+# 🔹 Active connections
+connections = {}
 
+# 🔹 Processing queue
+audio_queue = asyncio.Queue(maxsize=1000)
+
+
+# -------------------------
+# CONNECTION MANAGEMENT
+# -------------------------
 
 async def register(websocket):
-    connected_clients.add(websocket)
-    print(f"🟢 Client connected | Total: {len(connected_clients)}")
+    session_id = str(uuid.uuid4())
+    connections[session_id] = websocket
+    print(f"🟢 Connected: {session_id} | Total: {len(connections)}")
+    return session_id
 
 
-async def unregister(websocket):
-    connected_clients.remove(websocket)
-    print(f"🔴 Client disconnected | Total: {len(connected_clients)}")
+async def unregister(session_id):
+    if session_id in connections:
+        del connections[session_id]
+        print(f"🔴 Disconnected: {session_id} | Total: {len(connections)}")
 
 
-async def broadcast(sender, message):
-    """
-    Send incoming audio to all OTHER clients
-    """
-    dead_clients = []
+# -------------------------
+# AUDIO DECODER
+# -------------------------
 
-    for client in connected_clients:
-        if client != sender:
-            try:
-                await client.send(message)
-            except:
-                dead_clients.append(client)
+def decode_audio(payload: bytes):
+    if len(payload) < 4:
+        return None, None
 
-    # Remove broken connections
-    for dc in dead_clients:
-        connected_clients.remove(dc)
+    sample_rate = struct.unpack("I", payload[:4])[0]
+    audio = np.frombuffer(payload[4:], dtype=np.float32)
 
+    return audio, sample_rate
+
+
+# -------------------------
+# CONNECTION HANDLER
+# -------------------------
 
 async def handle_connection(websocket):
-    await register(websocket)
+    session_id = await register(websocket)
 
     try:
         async for message in websocket:
-            print(f"📥 Received {len(message)} bytes")
 
-            # 🔥 Just forward — no processing
-            await broadcast(websocket, message)
+            if not isinstance(message, (bytes, bytearray)):
+                continue
+
+            #  push to queue (DO NOT PROCESS HERE)
+            try:
+                await audio_queue.put({
+                    "session_id": session_id,
+                    "payload": message
+                })
+            except asyncio.QueueFull:
+                print(" Queue full — dropping chunk")
 
     except websockets.exceptions.ConnectionClosed:
         pass
 
     finally:
-        await unregister(websocket)
+        await unregister(session_id)
 
+
+# -------------------------
+# WORKER (REAL, CLEAN)
+# -------------------------
+
+async def worker():
+    while True:
+        task = await audio_queue.get()
+
+        session_id = task["session_id"]
+        payload = task["payload"]
+
+        #  Decode once here
+        audio, sample_rate = decode_audio(payload)
+
+        if audio is None:
+            audio_queue.task_done()
+            continue
+
+        # -------------------------
+        #  FUTURE: MODEL CALL HERE
+        # -------------------------
+        # text = await whisper(audio)
+
+        # -------------------------
+        #  TEMP: minimal ACK (no mock logic)
+        # -------------------------
+        if session_id in connections:
+            try:
+                await connections[session_id].send("...")  # placeholder
+            except:
+                pass
+
+        audio_queue.task_done()
+
+
+# -------------------------
+# MAIN
+# -------------------------
 
 async def main():
-    print(f"🚀 Broadcast Server running on ws://{HOST}:{PORT}")
+    print(f" Server running on ws://{HOST}:{PORT}")
+
+    #  Start workers
+    for _ in range(4):
+        asyncio.create_task(worker())
 
     async with websockets.serve(
         handle_connection,

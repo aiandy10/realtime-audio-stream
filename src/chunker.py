@@ -17,6 +17,13 @@ class AudioChunker:
         """
         Add incoming audio chunk to buffer
         """
+        if audio_chunk is None or len(audio_chunk) == 0:
+            return
+
+        # 🔥 ensure float32 consistency
+        if audio_chunk.dtype != np.float32:
+            audio_chunk = audio_chunk.astype(np.float32)
+
         self.buffer.append(audio_chunk)
         self.current_size += len(audio_chunk)
 
@@ -27,17 +34,26 @@ class AudioChunker:
         if self.current_size < self.window_size:
             return None
 
-        # Combine buffer into single array
-        full_audio = np.concatenate(list(self.buffer), axis=0)
+        if not self.buffer:
+            return None
 
-        # Take window
+        # 🔥 Efficient concat
+        full_audio = np.concatenate(self.buffer, axis=0)
+
+        if len(full_audio) < self.window_size:
+            return None
+
+        # 🔥 Extract window
         chunk = full_audio[:self.window_size]
 
-        # Remove stride amount from buffer
+        # 🔥 Slide window (stride)
         remaining_audio = full_audio[self.stride_size:]
 
-        # Reset buffer with remaining audio
-        self.buffer = deque([remaining_audio])
+        # 🔥 Reset buffer cleanly
+        self.buffer.clear()
+        if len(remaining_audio) > 0:
+            self.buffer.append(remaining_audio)
+
         self.current_size = len(remaining_audio)
 
         return chunk
